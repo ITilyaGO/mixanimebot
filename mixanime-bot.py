@@ -169,11 +169,12 @@ async def stats_command(message: Message):
         return
 
     sorted_stats = sorted(stats, key=lambda x: x[1], reverse=True)
-    stats_text = "📊 *Статистика запросов:*\n\n"
+    stats_title = "📊 *Статистика запросов:*\n\n"
+    stats_text = ""
     for user_tag, count in sorted_stats:
         stats_text += f"{user_tag} - {count}\n"
     
-    await message.answer(stats_text, parse_mode="Markdown")
+    await message.answer(stats_title + escape_markdown(stats_text), parse_mode="MarkdownV2")
 
 @dp.message(Command("get_permissions"))
 async def get_permissions_command(message: Message):
