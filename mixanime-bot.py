@@ -157,11 +157,11 @@ async def history_command(message: Message):
 
 @dp.message(Command("stats"))
 async def stats_command(message: Message):
-    user_id = message.from_user.id
+    # user_id = message.from_user.id
     
-    if not has_permission(user_id, "stats"):
-        await message.answer("⛔ У вас нет прав для использования этой команды.")
-        return
+    # if not has_permission(user_id, "stats"):
+    #     await message.answer("⛔ У вас нет прав для использования этой команды.")
+    #     return
 
     stats = get_all_user_stats()
     if not stats:
