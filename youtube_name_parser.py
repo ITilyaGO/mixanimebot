@@ -1,3 +1,5 @@
+# Для использвания установите
+# pip install google-api-python-client
 from googleapiclient.discovery import build
 
 # Ваш API-ключ
