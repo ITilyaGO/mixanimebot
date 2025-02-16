@@ -13,6 +13,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from aiogram import F
 import re
+from database import init_db, add_user, add_stat, get_user_stats, get_all_user_stats, get_user_permission, add_user_permission
 
 # Загружаем конфигурацию
 CONFIG_FILE = "config.json"
@@ -31,39 +32,32 @@ LOG_DIR = "log"
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, f"log-{datetime.now().strftime('%Y-%m-%d')}.log")
 
-# Создаём логгер
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG if DEBUG_MODE else logging.INFO)
 
-# Создаём обработчик для вывода в файл
 file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
 file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 
-# Создаём обработчик для вывода в консоль
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 
-# Очищаем старые обработчики (если есть) и добавляем новые
 if logger.hasHandlers():
     logger.handlers.clear()
 
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# Сбор статистики
-STATS_FILE = "stats.json"
-if not os.path.exists(STATS_FILE):
-    with open(STATS_FILE, "w", encoding="utf-8") as f:
-        json.dump({}, f)
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Создание клавиатуры
 keyboard = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="Аниме")]],
     resize_keyboard=True
 )
+
+pending_codes = {}
+def has_permission(user_id, command):
+    return get_user_permission(user_id, command)
 
 def escape_markdown(text: str) -> str:
     special_chars = r"[_*`~\[\](){}#+.!-]"
@@ -75,7 +69,7 @@ def is_missing_image(image_url):
 async def fetch_data():
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0"
         }
         
         for attempt in range(MAX_RETRIES):
@@ -87,7 +81,7 @@ async def fetch_data():
             anime_data = anime_response.json()
             if not anime_data:
                 logger.debug("Ошибка: пустой список аниме")
-                return None, "Ошибка загрузки данных"
+                return None, "Ошибка загрузки данных", ""
 
             random_anime = anime_data[0]
             image_url = f"https://shikimori.one{random_anime['image']['original']}"
@@ -113,14 +107,14 @@ async def fetch_data():
             img_data.save(img_filename)
 
             caption = f"{escape_markdown(random_title)}\n||[{escape_markdown(anime_title)}]({anime_url})||"
-            return img_filename, caption
+            return img_filename, caption, random_anime['id']
 
         logger.debug("Превышено количество попыток загрузки нормального изображения")
-        return None, "Ошибка загрузки данных"
+        return None, "Ошибка загрузки данных", ""
 
     except Exception as e:
         logger.error(f"Ошибка: {e}")
-        return None, "Ошибка загрузки данных"
+        return None, "Ошибка загрузки данных", ""
 
 @dp.message(Command("start"))
 async def start_command(message: Message):
@@ -129,26 +123,82 @@ async def start_command(message: Message):
 @dp.message(Command("anime"))
 @dp.message(F.text.lower() == "аниме")
 async def anime_button_handler(message: Message):
-    user_id = str(message.from_user.id)
-    
-    with open(STATS_FILE, "r", encoding="utf-8") as f:
-        stats = json.load(f)
-    
-    stats[user_id] = stats.get(user_id, 0) + 1
-    
-    with open(STATS_FILE, "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=4)
-    
-    logger.info(f"Пользователь {user_id} запросил аниме ({stats[user_id]} раз)")
-    
-    img_path, caption = await fetch_data()
+    user_id = message.from_user.id
+    username = message.from_user.first_name or "Без имени"
+    user_tag = f"@{message.from_user.username}" if message.from_user.username else "Нет username"
+
+    add_user(user_id, username, user_tag)
+
+    img_path, caption, anime_id = await fetch_data()
+
     if img_path:
-        await message.answer_photo(photo=FSInputFile(img_path), caption=caption, parse_mode="MarkdownV2")
+        sent_message = await message.answer_photo(photo=FSInputFile(img_path), caption=caption, parse_mode="MarkdownV2")
         os.remove(img_path)
+        add_stat(user_id, anime_id, caption.split("\n")[0].replace("\\", ""), sent_message.message_id, message.chat.id)
     else:
         await message.answer("Не удалось загрузить данные.")
 
+@dp.message(Command("history"))
+async def history_command(message: Message):
+    user_id = message.from_user.id
+    stats = get_user_stats(user_id)
+
+    if not stats:
+        await message.answer("У вас пока нет истории запросов.")
+        return
+
+    history_text = "📜 *История ваших запросов:*\n\n"
+    for record in stats[:10]:
+        date, anime_id, title = record[1], record[3], record[4]
+        history_text += f"📅 {date} | 🎬 {title} (ID: {anime_id})\n"
+
+    await message.answer(history_text, parse_mode="Markdown")
+
+
+@dp.message(Command("stats"))
+async def stats_command(message: Message):
+    user_id = message.from_user.id
+    
+    if not has_permission(user_id, "stats"):
+        await message.answer("⛔ У вас нет прав для использования этой команды.")
+        return
+
+    stats = get_all_user_stats()
+    if not stats:
+        await message.answer("❌ Пока нет данных о запросах.")
+        return
+
+    sorted_stats = sorted(stats, key=lambda x: x[1], reverse=True)
+    stats_text = "📊 *Статистика запросов:*\n\n"
+    for user_tag, count in sorted_stats:
+        stats_text += f"{user_tag} - {count}\n"
+    
+    await message.answer(stats_text, parse_mode="Markdown")
+
+@dp.message(Command("get_permissions"))
+async def get_permissions_command(message: Message):
+    user_id = message.from_user.id
+    code = str(random.randint(100000, 999999))
+    pending_codes[user_id] = code
+    logger.info(f"Код подтверждения для {user_id}: {code}")
+    await message.answer("🔑 Код подтверждения отправлен в консоль. Отправьте его боту, чтобы получить права.")
+
+@dp.message()
+async def confirm_permission(message: Message):
+    user_id = message.from_user.id
+    
+    if user_id not in pending_codes:
+        return  # Игнорируем сообщение, если код не запрашивался этим пользователем
+    
+    if message.text == pending_codes[user_id]:
+        add_user_permission(user_id, "stats")
+        del pending_codes[user_id]
+        await message.answer("✅ Доступ к команде /stats получен!")
+    else:
+        await message.answer("❌ Неверный код подтверждения.")
+
 async def main():
+    init_db()
     logger.info("Бот запущен...")
     await dp.start_polling(bot)
 
