@@ -1,0 +1,7 @@
+{
+    "token": "",
+    "api_url": "https://shikimori.one/api/animes?page={page}&season=2005_2025&score=6&kind=ova,tv,movie,ona",
+    "max_retries": 3,
+    "video_titles_file": "video_titles.txt",
+    "debug": true
+}
